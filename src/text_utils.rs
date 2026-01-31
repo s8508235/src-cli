@@ -1,78 +1,40 @@
 use jieba_rs::Jieba;
 use once_cell::sync::Lazy;
+use unicode_segmentation::UnicodeSegmentation;
 
 // We use Lazy to ensure the dictionary is only loaded once into memory,
 // making the function much faster for repeated calls.
 static JIEBA: Lazy<Jieba> = Lazy::new(Jieba::new);
 
-/// Helper to handle the reattachment logic
-fn merge_tokens_into(master_list: &mut Vec<String>, new_tokens: Vec<String>) {
-    let mut iter = new_tokens.into_iter().peekable();
-
-    while let Some(token) = iter.next() {
-        let trimmed = token.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        // Special handling for Hyphen as a "Connector"
-        if trimmed == "-" && !master_list.is_empty() {
-            if let Some(next_token) = iter.peek() {
-                let next_trimmed = next_token.trim();
-                if !next_trimmed.is_empty() {
-                    // Peek successful: merge [prev] + [-] + [next]
-                    if let Some(last_word) = master_list.last_mut() {
-                        last_word.push_str("-");
-                        last_word.push_str(next_trimmed);
-                        iter.next(); // Consume the peeked token
-                        continue;
-                    }
-                }
-            }
-        }
-
-        // Standard reattach logic for other punctuation
-        let is_punctuation = matches!(trimmed, "," | "." | "!" | "?" | "。" | "、" | "！" | "？");
-
-        if is_punctuation && !master_list.is_empty() {
-            if let Some(last_word) = master_list.last_mut() {
-                last_word.push_str(trimmed);
-                continue;
-            }
-        }
-
-        master_list.push(trimmed.to_string());
-    }
-}
-
-fn segment_text(input: &str) -> Vec<String> {
-    JIEBA
-        .cut(input, true)
-        .into_iter()
-        .map(|s| s.to_string())
-        .filter(|s| !s.trim().is_empty())
-        .collect()
-}
-
 pub fn split_text(text: &str) -> Vec<String> {
     let mut words: Vec<String> = Vec::new();
     let mut current_segment = String::new();
     let mut in_quotes = false;
+    let mut chars = text.chars().peekable();
 
-    for c in text.chars() {
+    while let Some(c) = chars.next() {
         match c {
-            '"' => {
-                if !in_quotes && !current_segment.is_empty() {
-                    merge_tokens_into(&mut words, segment_text(&current_segment));
-                    current_segment.clear();
+            // Handle quotes but protect English contractions like "it's"
+            '\'' | '"' => {
+                let is_contraction = c == '\''
+                    && !current_segment.is_empty()
+                    && chars.peek().map_or(false, |next| next.is_alphabetic());
+
+                if is_contraction {
+                    current_segment.push(c);
+                } else {
+                    // It's a quote boundary
+                    if !current_segment.is_empty() {
+                        words.extend(process_segment(&current_segment));
+                        current_segment.clear();
+                    }
+                    in_quotes = !in_quotes;
                 }
-
-                in_quotes = !in_quotes;
-                current_segment.push(c);
-
-                // When closing a quote, push the whole quoted block as one "word"
-                if !in_quotes {
-                    words.push(current_segment.clone());
+            }
+            // Split by whitespace only if not in a quote
+            c if c.is_whitespace() && !in_quotes => {
+                if !current_segment.is_empty() {
+                    words.extend(process_segment(&current_segment));
                     current_segment.clear();
                 }
             }
@@ -82,17 +44,68 @@ pub fn split_text(text: &str) -> Vec<String> {
         }
     }
 
-    // Process any remaining text after the loop
     if !current_segment.is_empty() {
-        if in_quotes {
-            // If the user forgot to close a quote, we treat the rest as one block
-            words.push(current_segment);
-        } else {
-            merge_tokens_into(&mut words, segment_text(&current_segment));
-        }
+        words.extend(process_segment(&current_segment));
     }
-
     words
+}
+
+fn process_segment(segment: &str) -> Vec<String> {
+    let mut result: Vec<String> = Vec::new();
+    let has_cjk = segment.chars().any(|c| {
+        (c >= '\u{4e00}' && c <= '\u{9fff}') || // Chinese
+        (c >= '\u{3040}' && c <= '\u{30ff}') // Japanese
+    });
+
+    if has_cjk {
+        // Jieba logic (Existing)
+        JIEBA
+            .cut(segment, true)
+            .into_iter()
+            .map(|s| s.to_string())
+            .filter(|s| !s.trim().is_empty())
+            .collect()
+    } else {
+        // split_word_bounds() gives us words, punctuation, and spaces as separate tokens
+        let mut tokens = segment.split_word_bounds().peekable();
+        while let Some(token) = tokens.next() {
+            // 1. Ignore whitespace tokens
+            if token.trim().is_empty() {
+                continue;
+            }
+
+            // 2. Identify if this token is a punctuation mark we want to merge
+            let is_punctuation = matches!(token, "." | "," | "!" | "?" | "。" | "、" | "！" | "？");
+
+            if is_punctuation && !result.is_empty() {
+                // Reattach to the previous word
+                if let Some(last_word) = result.last_mut() {
+                    last_word.push_str(token);
+                    continue;
+                }
+            }
+
+            // 3. Identify if this is a hyphen connector (for world-test)
+            if token == "-" && !result.is_empty() {
+                if let Some(next_token) = tokens.peek() {
+                    // If the next part is a word, merge [prev] + [-] + [next]
+                    if !next_token.trim().is_empty() {
+                        let mut hyphenated = result.pop().unwrap();
+                        hyphenated.push('-');
+                        hyphenated.push_str(tokens.next().unwrap()); // Consume the word after hyphen
+                        result.push(hyphenated);
+                        continue;
+                    }
+                }
+            }
+
+            // 4. Only add if it contains alphanumeric characters (ignores lone symbols)
+            if token.chars().any(|c| c.is_alphanumeric()) {
+                result.push(token.to_string());
+            }
+        }
+        result
+    }
 }
 
 #[cfg(test)]
@@ -126,7 +139,7 @@ mod tests {
 
     #[test]
     fn test_multiple_punctuation_merge() {
-        let input = "Hello, world-test. Done!";
+        let input = "Hello, world-test. \"Done!\"";
         let result = split_text(input);
 
         // Expected: ["Hello,", "world-test.", "Done!"]
@@ -136,23 +149,47 @@ mod tests {
     }
 
     #[test]
-    fn test_unclosed_quote_fallback() {
-        let input = "Missing \"quote here";
+    fn test_mixed_jieba_unicode() {
+        // Test Case: English Contractions + Quoted Phrases + Chinese
+        let input = "There's credibility to 'this time it's different' and 這是一個測試。";
         let result = split_text(input);
 
-        // Should treat the unclosed quote as one block to prevent crashing
-        assert_eq!(result[1], "\"quote here");
+        // Verify English contractions
+        assert!(result.contains(&"There's".to_string()));
+        assert!(result.contains(&"it's".to_string()));
+
+        // Verify Chinese (Jieba)
+        assert!(result.contains(&"這是".to_string()));
+        assert!(result.contains(&"一個".to_string()));
+
+        // Verify Quote Stripping
+        assert!(!result.contains(&"'this".to_string()));
     }
 
-    // #[test]
-    // fn test_complex_mixed_cjk() {
-    //     let input = "データ \"Batch 1\" を処理、完了。";
-    //     let result = split_text(input);
+    #[test]
+    fn test_single_quote() {
+        let input = "There's some credibility to 'this time it's different'";
+        let result = split_text(input);
+        let expected = vec![
+            "There's",
+            "some",
+            "credibility",
+            "to",
+            "this",
+            "time",
+            "it's",
+            "different",
+        ];
 
-    //     // Expected: ["データ", "\"Batch 1\"", "を", "処理、", "完了。"]
-    //     assert_eq!(result[0], "データ");
-    //     assert_eq!(result[1], "\"Batch 1\"");
-    //     assert_eq!(result[3], "処理、");
-    //     assert_eq!(result[4], "完了。");
-    // }
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_ignore_single_punctuation() {
+        let input = "That is - the result";
+        let result = split_text(input);
+        let expected = vec!["That", "is", "the", "result"];
+
+        assert_eq!(result, expected);
+    }
 }

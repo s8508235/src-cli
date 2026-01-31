@@ -40,7 +40,7 @@ struct Args {
     #[arg(long, default_value = "#1a1911")]
     secondary_color: String,
 
-    /// Rest duration in seconds between sentences (default: 0.1)
+    /// Rest duration in seconds between sentences for blinking (default: 0.1)
     #[arg(long, default_value = "0.1")]
     rest_duration: f64,
 
@@ -285,11 +285,19 @@ fn main() -> Result<()> {
 
     // Check if previous word ended a sentence (has punctuation)
     let mut current_time = 0.0;
+    let mut last_relax_time = 0.0;
     for (i, word) in words.iter().enumerate() {
         let mut relax_time = 0.0;
-        if i > 0 && (word.ends_with('.') || word.ends_with('!') || word.ends_with('?')) {
+        // relax every 60 second or ends with punctuation
+        if i > 0
+            && (last_relax_time > current_time + 60.0
+                || word.ends_with('.')
+                || word.ends_with('!')
+                || word.ends_with('?'))
+        {
             relax_time = args.rest_duration;
             total_duration += args.rest_duration;
+            last_relax_time = current_time;
         }
         let start_time = current_time;
         let end_time = current_time + seconds_per_word + relax_time;
@@ -305,7 +313,7 @@ fn main() -> Result<()> {
             fontsize = 80;
         }
         let drawtext = format!(
-            "drawtext=fontfile='{}':text='{}':fontcolor=white:fontsize={}:x=(w-text_w)/5*2:y=(h-text_h)/2:enable='between(t,{},{})'",
+            "drawtext=fontfile='{}':text='{}':fontcolor=white:fontsize={}:x=(w-text_w)/5*2:y=h/2-ascent:enable='between(t,{},{})'",
             font_location, escaped_word, fontsize, start_time, end_time
         );
 
