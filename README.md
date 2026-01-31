@@ -13,13 +13,13 @@ Convert text to video using FFmpeg.
 ## Example
 ```sh
 # From argument
-text-to-video --text "Hello, World!"
+src-cli --text "Hello, World!"
 
 # From pipe
-echo "Hello!" | text-to-video -o output.mp4
+echo "Hello!" | src-cli -o output.mp4
 
 # Custom styling
-text-to-video -t "Big News" --font-size 72 --text-color yellow --bg-color blue -d 10
+src-cli -t "Big News" --text-color yellow --bg-color blue
 ```
 
 ## Claude
