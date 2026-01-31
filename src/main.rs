@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::io::{self, Read};
 use std::process::Command;
-use std::fs;
 
 /// Convert text to video using FFmpeg
 #[derive(Parser, Debug)]
@@ -19,10 +18,6 @@ struct Args {
     /// Words per minute (default: 300)
     #[arg(short, long, default_value = "300")]
     wpm: u32,
-
-    /// Frames per second
-    #[arg(long, default_value = "30")]
-    fps: u32,
 }
 
 fn main() -> Result<()> {
@@ -50,75 +45,55 @@ fn main() -> Result<()> {
 
     // Calculate duration per word based on WPM
     let seconds_per_word = 60.0 / args.wpm as f64;
-    let frames_per_word = (seconds_per_word * args.fps as f64).round() as u32;
+    let total_duration = seconds_per_word * word_count as f64;
 
     println!("Creating video: {}", args.output);
-    println!("Words: {} | WPM: {} | Duration per word: {:.2}s | Frames per word: {}", 
-             word_count, args.wpm, seconds_per_word, frames_per_word);
+    println!("Words: {} | WPM: {} | Duration per word: {:.2}s | Total: {:.2}s", 
+             word_count, args.wpm, seconds_per_word, total_duration);
 
-    // Create images for each word
-    let temp_dir = std::env::temp_dir().join("text-to-video");
-    fs::create_dir_all(&temp_dir)?;
-
-    let mut frame_number = 0;
+    // Build filter with multiple drawtext filters, each enabled for specific time range
+    let mut filters = Vec::new();
     
-    for word in &words {
+    for (i, word) in words.iter().enumerate() {
+        let start_time = i as f64 * seconds_per_word;
+        let end_time = (i + 1) as f64 * seconds_per_word;
+        
         // Escape word for FFmpeg
         let escaped_word = word
             .replace('\\', "\\\\")
             .replace('\'', "'\\''")
             .replace(':', "\\:");
 
-        // Generate frames for this word
-        for _ in 0..frames_per_word {
-            let frame_path = temp_dir.join(format!("frame_{:06}.png", frame_number));
-            
-            let output = Command::new("ffmpeg")
-                .args([
-                    "-f", "lavfi",
-                    "-i", "color=c=black:s=1920x1080:d=0.1",
-                    "-vf", &format!("drawtext=text='{}':fontcolor=white:fontsize=120:x=(w-text_w)/2:y=(h-text_h)/2", escaped_word),
-                    "-frames:v", "1",
-                    "-y",
-                    frame_path.to_str().unwrap(),
-                ])
-                .output()
-                .context("Failed to generate frame")?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                anyhow::bail!("FFmpeg failed on word '{}': {}", word, stderr);
-            }
-
-            frame_number += 1;
-        }
-        print!(".");
-        std::io::Write::flush(&mut std::io::stdout()).ok();
+        let drawtext = format!(
+            "drawtext=text='{}':fontcolor=white:fontsize=120:x=(w-text_w)/2:y=(h-text_h)/2:enable='between(t,{},{})'",
+            escaped_word, start_time, end_time
+        );
+        
+        filters.push(drawtext);
     }
-    println!();
 
-    // Create video from image sequence
-    let pattern = temp_dir.join("frame_%06d.png");
+    // Combine all filters
+    let filter_chain = filters.join(",");
+
+    println!("Rendering video...");
     
     let output = Command::new("ffmpeg")
         .args([
-            "-framerate", &args.fps.to_string(),
-            "-i", pattern.to_str().unwrap(),
+            "-f", "lavfi",
+            "-i", &format!("color=c=black:s=1920x1080:d={}", total_duration),
+            "-vf", &filter_chain,
             "-c:v", "libx264",
             "-pix_fmt", "yuv420p",
             "-y",
             &args.output,
         ])
         .output()
-        .context("Failed to create video from frames")?;
+        .context("Failed to execute ffmpeg. Make sure ffmpeg is installed and in PATH.")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("FFmpeg video creation failed:\n{}", stderr);
+        anyhow::bail!("FFmpeg failed:\n{}", stderr);
     }
-
-    // Cleanup
-    fs::remove_dir_all(&temp_dir).ok();
 
     println!("✓ Video created: {}", args.output);
     Ok(())
