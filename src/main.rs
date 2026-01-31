@@ -168,7 +168,7 @@ fn main() -> Result<()> {
 
     let mut font_location = args.font_location;
     // give font default location based on OS
-    if font_location.len() == 0 {
+    if font_location.is_empty() {
         let info = os_info::get();
         match info.os_type() {
             Type::Debian => {

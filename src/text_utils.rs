@@ -18,7 +18,7 @@ pub fn split_text(text: &str) -> Vec<String> {
             '\'' | '"' => {
                 let is_contraction = c == '\''
                     && !current_segment.is_empty()
-                    && chars.peek().map_or(false, |next| next.is_alphabetic());
+                    && chars.peek().is_some_and(|next| next.is_alphabetic());
 
                 if is_contraction {
                     current_segment.push(c);
@@ -53,8 +53,8 @@ pub fn split_text(text: &str) -> Vec<String> {
 fn process_segment(segment: &str) -> Vec<String> {
     let mut result: Vec<String> = Vec::new();
     let has_cjk = segment.chars().any(|c| {
-        (c >= '\u{4e00}' && c <= '\u{9fff}') || // Chinese
-        (c >= '\u{3040}' && c <= '\u{30ff}') // Japanese
+        ('\u{4e00}'..='\u{9fff}').contains(&c) || // Chinese
+        ('\u{3040}'..='\u{30ff}').contains(&c) // Japanese
     });
 
     if has_cjk {
@@ -86,16 +86,17 @@ fn process_segment(segment: &str) -> Vec<String> {
             }
 
             // 3. Identify if this is a hyphen connector (for world-test)
-            if token == "-" && !result.is_empty() {
-                if let Some(next_token) = tokens.peek() {
-                    // If the next part is a word, merge [prev] + [-] + [next]
-                    if !next_token.trim().is_empty() {
-                        let mut hyphenated = result.pop().unwrap();
-                        hyphenated.push('-');
-                        hyphenated.push_str(tokens.next().unwrap()); // Consume the word after hyphen
-                        result.push(hyphenated);
-                        continue;
-                    }
+            if token == "-"
+                && !result.is_empty()
+                && let Some(next_token) = tokens.peek()
+            {
+                // If the next part is a word, merge [prev] + [-] + [next]
+                if !next_token.trim().is_empty() {
+                    let mut hyphenated = result.pop().unwrap();
+                    hyphenated.push('-');
+                    hyphenated.push_str(tokens.next().unwrap()); // Consume the word after hyphen
+                    result.push(hyphenated);
+                    continue;
                 }
             }
 
