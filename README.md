@@ -1,7 +1,10 @@
-src represent speed reading challenge
-https://www.youtube.com/watch?v=NdKcDPBQ-Lw
+## Overview
+See [How Fast Can You Read? - Speed Reading Challenge](https://www.youtube.com/watch?v=NdKcDPBQ-Lw).
+
 
 ## Usage 
+Convert text to video using FFmpeg.
+
 ### Colors
 - Named colors (white, black, red, etc.)
 - Hex colors (#FF0000, 0xFF0000)
@@ -38,3 +41,7 @@ At 300 WPM: "Hello World" → "Hello" shows 0.0-0.2s, "World" shows 0.2-0.4s
 
 ## TODO
 - find stress character for words
+
+## MISC
+- install Google Noto
+- for bgm [DOVA-SYNDROME YouTube Official ](https://www.youtube.com/@DOVASYNDROMEYouTubeOfficial) is a good place.

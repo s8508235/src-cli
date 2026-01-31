@@ -1,12 +1,20 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use std::io::{self, Read};
+use once_cell::sync::Lazy;
+use os_info::Type;
+use std::io::{self, IsTerminal};
 use std::process::Command;
 use std::time::Instant;
 
+use jieba_rs::Jieba;
+
+// We use Lazy to ensure the dictionary is only loaded once into memory,
+// making the function much faster for repeated calls.
+static JIEBA: Lazy<Jieba> = Lazy::new(Jieba::new);
+
 /// Convert text to video using FFmpeg
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(author="s8508235", version, about, long_about = None)]
 struct Args {
     /// Input text (if not provided, reads from stdin)
     #[arg(short, long)]
@@ -43,6 +51,10 @@ struct Args {
     // local bgm location for webm
     #[arg(long, default_value = "bgm.webm")]
     bgm_location: String,
+
+    // local font location for output text
+    #[arg(long, default_value = "")]
+    font_location: String,
 }
 
 /// Validate FFmpeg color format
@@ -113,35 +125,81 @@ fn validate_color(color: &str) -> Result<()> {
     );
 }
 
+// Helper to handle the actual Jieba segmentation and whitespace cleanup
+fn segment_text(input: &str) -> Vec<String> {
+    JIEBA
+        .cut(input, true)
+        .into_iter()
+        .map(|s| s.to_string())
+        // Filter out empty strings or pure whitespace tokens
+        .filter(|s| !s.trim().is_empty())
+        .collect()
+}
+
 fn split_text(text: &str) -> Vec<String> {
     let mut words: Vec<String> = Vec::new();
-    let mut current_word = String::new();
+    let mut current_segment = String::new();
     let mut in_quotes = false;
 
     for c in text.chars() {
         match c {
             '"' => {
+                // When hitting a quote, process the accumulated non-quoted text
+                if !in_quotes && !current_segment.is_empty() {
+                    words.extend(segment_text(&current_segment));
+                    current_segment.clear();
+                }
+
                 in_quotes = !in_quotes;
-                current_word.push(c);
-            }
-            ' ' | '\t' | '\n' if !in_quotes => {
-                if !current_word.is_empty() {
-                    words.push(current_word.clone());
-                    current_word.clear();
+                current_segment.push(c);
+
+                // When closing a quote, push the whole quoted block as one "word"
+                if !in_quotes {
+                    words.push(current_segment.clone());
+                    current_segment.clear();
                 }
             }
             _ => {
-                current_word.push(c);
+                current_segment.push(c);
             }
         }
     }
 
-    // Don't forget the last word
-    if !current_word.is_empty() {
-        words.push(current_word);
+    // Process any remaining text after the loop
+    if !current_segment.is_empty() {
+        if in_quotes {
+            // If the user forgot to close a quote, we treat the rest as one block
+            words.push(current_segment);
+        } else {
+            words.extend(segment_text(&current_segment));
+        }
     }
 
     words
+}
+
+fn get_piped_input() -> Result<String> {
+    let stdin = io::stdin();
+
+    // 1. Check if the input is coming from a real person (keyboard)
+    if stdin.is_terminal() {
+        // If it's a terminal, the user likely didn't mean to pipe data.
+        // You can return an error, show a help message, or skip reading.
+        anyhow::bail!("No input detected via pipe. Usage: echo \"text\" | src-cli");
+    }
+
+    // 2. If we reach here, data is being piped in
+    let mut buffer = String::new();
+    // Use a scoped handle for better performance
+    let mut handle = stdin.lock();
+    io::Read::read_to_string(&mut handle, &mut buffer)?;
+
+    // 3. Optional: error out if the pipe was empty
+    if buffer.trim().is_empty() {
+        anyhow::bail!("The piped input was empty.");
+    }
+
+    Ok(buffer)
 }
 
 fn main() -> Result<()> {
@@ -164,6 +222,33 @@ fn main() -> Result<()> {
     }
 
     let args = Args::parse();
+
+    let mut font_location = args.font_location;
+    // give font default location based on OS
+    if font_location.len() == 0 {
+        let info = os_info::get();
+        match info.os_type() {
+            Type::Debian => {
+                println!("Running on Debian");
+                font_location =
+                    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc".to_string();
+            }
+            Type::Ubuntu => {
+                println!("Running on Ubuntu");
+                font_location =
+                    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc".to_string();
+            }
+            Type::Linux => {
+                println!("Running on a general Linux distribution.");
+            }
+            Type::Windows => {
+                println!("Running on Windows");
+            }
+            _ => {
+                println!("Running on a different OS: {:?}", info.os_type());
+            }
+        }
+    }
 
     let bgm_check = Command::new("ffprobe")
         .args([
@@ -194,13 +279,14 @@ fn main() -> Result<()> {
     // Get input text from argument or stdin
     let text = match args.text {
         Some(t) => t,
-        None => {
-            let mut buffer = String::new();
-            io::stdin()
-                .read_to_string(&mut buffer)
-                .context("Failed to read from stdin")?;
-            buffer.trim().to_string()
-        }
+        None => match get_piped_input() {
+            Ok(text) => text,
+            Err(e) => {
+                // Prints the "No input detected" message and exits
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        },
     };
 
     if text.is_empty() {
@@ -276,8 +362,8 @@ fn main() -> Result<()> {
             fontsize = 80;
         }
         let drawtext = format!(
-            "drawtext=text='{}':fontcolor=white:fontsize={}:x=(w-text_w)/5*2:y=(h-text_h)/2:enable='between(t,{},{})'",
-            escaped_word, fontsize, start_time, end_time
+            "drawtext=fontfile='{}':text='{}':fontcolor=white:fontsize={}:x=(w-text_w)/5*2:y=(h-text_h)/2:enable='between(t,{},{})'",
+            font_location, escaped_word, fontsize, start_time, end_time
         );
 
         current_time = end_time;
@@ -287,8 +373,8 @@ fn main() -> Result<()> {
 
     // mark wpm
     let drawtext = format!(
-        "drawtext=text='{} wpm':fontcolor={}:fontsize=60:x=(w-text_w)*0.9:y=(h-text_h)*0.9'",
-        args.wpm, args.secondary_color
+        "drawtext=fontfile='{}':text='{} wpm':fontcolor={}:fontsize=60:x=(w-text_w)*0.9:y=(h-text_h)*0.9'",
+        font_location, args.wpm, args.secondary_color
     );
 
     filters.push(drawtext);
