@@ -23,3 +23,5 @@ target
 
 *.mp4
 .vscode
+*.txt
+*.webm

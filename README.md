@@ -19,7 +19,7 @@ echo "Hello!" | text-to-video -o output.mp4
 text-to-video -t "Big News" --font-size 72 --text-color yellow --bg-color blue -d 10
 ```
 
-## Claue
+## Claude
 It used concat files in the beginning and after providing stackoverflow links, 
 it created temp images to achive. Finally after providing [Ultimate guide to ffmpeg](https://img.ly/blog/ultimate-guide-to-ffmpeg/#ffmpeg-history), it uses filter to do the job. (Sonnect 4.5)
 
@@ -35,3 +35,6 @@ How it works:
 Creates a black video of total duration
 Each word has a drawtext filter that's only enabled during its time window
 At 300 WPM: "Hello World" → "Hello" shows 0.0-0.2s, "World" shows 0.2-0.4s
+
+## TODO
+- find stress character for words
