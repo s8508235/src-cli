@@ -1,16 +1,12 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use once_cell::sync::Lazy;
 use os_info::Type;
 use std::io::{self, IsTerminal};
 use std::process::Command;
 use std::time::Instant;
 
-use jieba_rs::Jieba;
-
-// We use Lazy to ensure the dictionary is only loaded once into memory,
-// making the function much faster for repeated calls.
-static JIEBA: Lazy<Jieba> = Lazy::new(Jieba::new);
+mod text_utils;
+use text_utils::split_text;
 
 /// Convert text to video using FFmpeg
 #[derive(Parser, Debug)]
@@ -123,59 +119,6 @@ fn validate_color(color: &str) -> Result<()> {
         "Invalid color '{}'. Use:\n  - Named colors (e.g., white, black, red, blue)\n  - Hex colors (e.g., #FF0000 or 0xFF0000)\n  - RGB format (e.g., rgb(255,0,0))",
         color
     );
-}
-
-// Helper to handle the actual Jieba segmentation and whitespace cleanup
-fn segment_text(input: &str) -> Vec<String> {
-    JIEBA
-        .cut(input, true)
-        .into_iter()
-        .map(|s| s.to_string())
-        // Filter out empty strings or pure whitespace tokens
-        .filter(|s| !s.trim().is_empty())
-        .collect()
-}
-
-fn split_text(text: &str) -> Vec<String> {
-    let mut words: Vec<String> = Vec::new();
-    let mut current_segment = String::new();
-    let mut in_quotes = false;
-
-    for c in text.chars() {
-        match c {
-            '"' => {
-                // When hitting a quote, process the accumulated non-quoted text
-                if !in_quotes && !current_segment.is_empty() {
-                    words.extend(segment_text(&current_segment));
-                    current_segment.clear();
-                }
-
-                in_quotes = !in_quotes;
-                current_segment.push(c);
-
-                // When closing a quote, push the whole quoted block as one "word"
-                if !in_quotes {
-                    words.push(current_segment.clone());
-                    current_segment.clear();
-                }
-            }
-            _ => {
-                current_segment.push(c);
-            }
-        }
-    }
-
-    // Process any remaining text after the loop
-    if !current_segment.is_empty() {
-        if in_quotes {
-            // If the user forgot to close a quote, we treat the rest as one block
-            words.push(current_segment);
-        } else {
-            words.extend(segment_text(&current_segment));
-        }
-    }
-
-    words
 }
 
 fn get_piped_input() -> Result<String> {
@@ -409,6 +352,8 @@ fn main() -> Result<()> {
             "-b:a",
             "192k",
             "-shortest",
+            // "-filter:a",
+            // "\"loudnorm=I=-14:LRA=11:TP=-1.5:measured_I=-27.61:measured_LRA=18.06:measured_TP=-4.47:measured_thresh=-39.20:offset=0.58:linear=true\"",
             // end of add bgm
             "-vf",
             &filter_chain,
