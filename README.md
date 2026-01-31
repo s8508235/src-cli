@@ -1,6 +1,6 @@
 ## Overview
 See [How Fast Can You Read? - Speed Reading Challenge](https://www.youtube.com/watch?v=NdKcDPBQ-Lw).
-
+Might aim for less than two minutes video.
 
 ## Usage 
 Convert text to video using FFmpeg.
