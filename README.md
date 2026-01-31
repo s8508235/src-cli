@@ -1,6 +1,12 @@
 src represent speed reading challenge
 https://www.youtube.com/watch?v=NdKcDPBQ-Lw
 
+## Usage 
+### Colors
+- Named colors (white, black, red, etc.)
+- Hex colors (#FF0000, 0xFF0000)
+- RGB format (rgb(255,0,0))
+
 ## Example
 ```sh
 # From argument
