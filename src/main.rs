@@ -1,9 +1,11 @@
+use std::io::{self, IsTerminal, Read};
+use std::path::Path;
+use std::process::Command;
+use std::time::Instant;
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use os_info::Type;
-use std::io::{self, IsTerminal};
-use std::process::Command;
-use std::time::Instant;
 
 mod text_utils;
 use text_utils::split_text;
@@ -33,8 +35,8 @@ struct Args {
     bg_color: String,
 
     /// Show focus lines around the word
-    #[arg(long, default_value = "true")]
-    focus_lines: bool,
+    #[arg(long, default_value_t = true)]
+    focus_lines: std::primitive::bool,
 
     /// Focus line color (default: #1a1911)
     #[arg(long, default_value = "#1a1911")]
@@ -121,28 +123,30 @@ fn validate_color(color: &str) -> Result<()> {
     );
 }
 
-fn get_piped_input() -> Result<String> {
+fn get_piped_input() -> anyhow::Result<String> {
+    #[cfg(windows)]
+    println!("use cmd if encoding is wrong");
+
     let stdin = io::stdin();
 
-    // 1. Check if the input is coming from a real person (keyboard)
     if stdin.is_terminal() {
-        // If it's a terminal, the user likely didn't mean to pipe data.
-        // You can return an error, show a help message, or skip reading.
         anyhow::bail!("No input detected via pipe. Usage: echo \"text\" | src-cli");
     }
 
-    // 2. If we reach here, data is being piped in
-    let mut buffer = String::new();
-    // Use a scoped handle for better performance
+    let mut buffer = Vec::new();
     let mut handle = stdin.lock();
-    io::Read::read_to_string(&mut handle, &mut buffer)?;
+    handle.read_to_end(&mut buffer)?;
 
-    // 3. Optional: error out if the pipe was empty
-    if buffer.trim().is_empty() {
+    // Convert to String
+    // from_utf8_lossy handles CJK characters correctly IF the source
+    // is UTF-8 (which we will force in the next step).
+    let content = String::from_utf8_lossy(&buffer).to_string();
+
+    if content.trim().is_empty() {
         anyhow::bail!("The piped input was empty.");
     }
 
-    Ok(buffer)
+    Ok(content)
 }
 
 fn main() -> Result<()> {
@@ -166,33 +170,61 @@ fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let mut font_location = args.font_location;
+    // in windows
+    let mut font_location: String = args.font_location;
+
     // give font default location based on OS
+    let info = os_info::get();
     if font_location.is_empty() {
-        let info = os_info::get();
         match info.os_type() {
-            Type::Debian => {
-                println!("Running on Debian");
-                font_location =
-                    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc".to_string();
-            }
-            Type::Ubuntu => {
-                println!("Running on Ubuntu");
-                font_location =
-                    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc".to_string();
+            Type::Debian | Type::Ubuntu => {
+                println!("Running on Debian/Ubuntu");
+
+                // Linux: Try common CJK fonts
+                let candidates = vec![
+                    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                    "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                ];
+
+                for font in candidates {
+                    if std::path::Path::new(font).exists() {
+                        font_location = font.to_string();
+                        break;
+                    }
+                }
             }
             Type::Linux => {
-                println!("Running on a general Linux distribution.");
+                println!(
+                    "Running on a general Linux distribution. You should provide your own font location"
+                );
+                std::process::exit(1);
             }
             Type::Windows => {
-                println!("Running on Windows");
+                // configurable font downgrade performance a lot on windows
+                println!("Running on Windows, use msyh anyway");
+            }
+            Type::Macos => {
+                font_location = "/System/Library/Fonts/PingFang.ttc".to_string();
+                println!("Running on MacOS");
             }
             _ => {
-                println!("Running on a different OS: {:?}", info.os_type());
+                println!(
+                    "Running on a different OS: {:?}, you should provide your own font location",
+                    info.os_type()
+                );
+                std::process::exit(1);
             }
         }
     }
 
+    println!("Using font {}", font_location);
+
+    if !Path::new(&args.bgm_location).exists() {
+        anyhow::bail!("BGM file not found at: {}", args.bgm_location);
+        // Or if not using anyhow:
+        // panic!("BGM file not found at: {}", args.bgm_location);
+    }
     let bgm_check = Command::new("ffprobe")
         .args([
             "-v",
@@ -254,7 +286,7 @@ fn main() -> Result<()> {
     );
 
     // Build filter with multiple drawtext filters, each enabled for specific time range
-    let mut filters = Vec::new();
+    let mut filters: Vec<String> = Vec::new();
 
     // Add focus lines if enabled
     if args.focus_lines {
@@ -312,10 +344,18 @@ fn main() -> Result<()> {
         if escaped_word.len() > 50 {
             fontsize = 80;
         }
-        let drawtext = format!(
-            "drawtext=fontfile='{}':text='{}':fontcolor=white:fontsize={}:x=(w-text_w)/5*2:y=h/2-ascent:enable='between(t,{},{})'",
-            font_location, escaped_word, fontsize, start_time, end_time
-        );
+
+        let drawtext = if info.os_type() == Type::Windows {
+            format!(
+                "drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text={}:fontcolor={}:fontsize={}:x=(w-text_w)/5*2:y=h/2-ascent:enable='between(t,{},{})'",
+                escaped_word, args.text_color, fontsize, start_time, end_time
+            )
+        } else {
+            format!(
+                "drawtext=fontfile='{}':text='{}':fontcolor={}:fontsize={}:x=(w-text_w)/5*2:y=h/2-ascent:enable='between(t,{},{})'",
+                font_location, escaped_word, args.text_color, fontsize, start_time, end_time
+            )
+        };
 
         current_time = end_time;
 
@@ -323,10 +363,18 @@ fn main() -> Result<()> {
     }
 
     // mark wpm
-    let drawtext = format!(
-        "drawtext=fontfile='{}':text='{} wpm':fontcolor={}:fontsize=60:x=(w-text_w)*0.9:y=(h-text_h)*0.9'",
-        font_location, args.wpm, args.secondary_color
-    );
+    let drawtext = if info.os_type() == Type::Windows {
+        println!("Running on Windows, use msyh despite of argument");
+        format!(
+            "drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text='{} wpm':fontcolor={}:fontsize=60:x=(w-text_w)*0.9:y=(h-text_h)*0.9",
+            args.wpm, args.secondary_color
+        )
+    } else {
+        format!(
+            "drawtext=fontfile='{}':text='{} wpm':fontcolor={}:fontsize=60:x=(w-text_w)*0.9:y=(h-text_h)*0.9",
+            font_location, args.wpm, args.secondary_color
+        )
+    };
 
     filters.push(drawtext);
 
@@ -336,37 +384,46 @@ fn main() -> Result<()> {
     println!("Rendering video...");
 
     let output = Command::new("ffmpeg")
+        .env("FONTCONFIG_FILE", "NUL")
         .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
             "-hwaccel",
             "auto", // Use hardware acceleration if available
             "-f",
             "lavfi",
             "-i",
-            &format!("color=c={}:s=1920x1080:d={}", args.bg_color, total_duration),
+            &format!(
+                "color=c={}:s=1920x1080:d={}:r=30",
+                args.bg_color, total_duration
+            ),
             // add bgm for webm
             // ffmpeg -i video.mp4 -stream_loop -1 -i bgm.webm -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 192k -shortest
             "-stream_loop",
             "-1",
             "-i",
             &args.bgm_location,
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
-            "-c:v",
-            "copy",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-            "-shortest",
             // "-filter:a",
             // "\"loudnorm=I=-14:LRA=11:TP=-1.5:measured_I=-27.61:measured_LRA=18.06:measured_TP=-4.47:measured_thresh=-39.20:offset=0.58:linear=true\"",
             // end of add bgm
             "-vf",
             &filter_chain,
+            "-map",
+            "0:v:0", // Map video from input 0
+            "-map",
+            "1:a:0", // Map audio from input 1
             "-c:v",
             "libx264",
+            "-preset",
+            "ultrafast", // Much faster encoding (was using default "medium")
+            "-crf",
+            "23", // Quality level (lower = better, 23 is good)
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-shortest",
             "-pix_fmt",
             "yuv420p",
             "-y",
