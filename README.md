@@ -21,7 +21,19 @@ echo "Hello!" | src-cli -o output.mp4
 # Custom styling
 src-cli -t "Big News" --text-color yellow --bg-color blue
 ```
-
+## Config
+add config file to `$HOME/.src-cli.toml` or `%USERPROFILE%\.src-cli.toml`. Here is a example:
+```toml
+wpm = 250
+text_color = "#ffffee"
+bg_color = "#1a1a1a"
+focus_color = "#00ff00"
+secondary_color = "#666666"
+rest_duration = 1.0
+focus_lines = true
+bgm_location = "/home/user/music/relaxing.webm"
+overwrite_output_file = true
+```
 ## Claude
 It used concat files in the beginning and after providing stackoverflow links, 
 it created temp images to achive. Finally after providing [Ultimate guide to ffmpeg](https://img.ly/blog/ultimate-guide-to-ffmpeg/#ffmpeg-history), it uses filter to do the job. (Sonnect 4.5)

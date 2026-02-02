@@ -9,7 +9,7 @@ use os_info::Type;
 
 mod text_utils;
 use text_utils::split_text;
-
+mod config;
 /// Convert text to video using FFmpeg
 #[derive(Parser, Debug)]
 #[command(author="s8508235", version, about, long_about = None)]
@@ -47,12 +47,16 @@ struct Args {
     rest_duration: f64,
 
     // local bgm location for webm
-    #[arg(long, default_value = "bgm.webm")]
-    bgm_location: String,
+    #[arg(long, default_value = None)]
+    bgm_location: Option<String>,
 
     // local font location for output text
-    #[arg(long, default_value = "")]
-    font_location: String,
+    #[arg(long, default_value = None)]
+    font_location: Option<String>,
+
+    // overwrite output file if the same name file exists
+    #[arg(long)]
+    overwrite_output_file: Option<std::primitive::bool>,
 }
 
 /// Validate FFmpeg color format
@@ -168,10 +172,12 @@ fn main() -> Result<()> {
         }
     }
 
-    let args = Args::parse();
+    let mut args = Args::parse();
+    // overwrite config if args not present
+    config::merge_config_with_args(&mut args);
 
     // in windows
-    let mut font_location: String = args.font_location;
+    let mut font_location: String = args.font_location.unwrap_or("".to_string());
 
     // give font default location based on OS
     let info = os_info::get();
@@ -201,6 +207,10 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
             Type::Windows => {
+                let windir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".to_string());
+                // Use forward slashes - FFmpeg on Windows accepts them
+                font_location = format!("{}/Fonts/msyh.ttc", windir.replace("\\", "/"));
+                font_location = font_location.replace(":", "\\:");
                 // configurable font downgrade performance a lot on windows
                 println!("Running on Windows, use msyh anyway");
             }
@@ -220,30 +230,42 @@ fn main() -> Result<()> {
 
     println!("Using font {}", font_location);
 
-    if !Path::new(&args.bgm_location).exists() {
-        anyhow::bail!("BGM file not found at: {}", args.bgm_location);
-        // Or if not using anyhow:
-        // panic!("BGM file not found at: {}", args.bgm_location);
-    }
-    let bgm_check = Command::new("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-show_entries",
-            "stream=codec_type",
-            "-of",
-            "csv=p=0",
-        ])
-        .arg(&args.bgm_location)
-        .output();
+    if let Some(bgm_location) = &args.bgm_location.clone() {
+        if !Path::new(bgm_location).exists() {
+            args.bgm_location = None;
+            println!(
+                "BGM file not found at: '{}', process with no bgm",
+                bgm_location
+            );
+        } else {
+            let bgm_check = Command::new("ffprobe")
+                .args([
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "stream=codec_type",
+                    "-of",
+                    "csv=p=0",
+                ])
+                .arg(bgm_location)
+                .output();
 
-    match bgm_check {
-        Ok(output) if output.status.success() => {
-            // bgm audio is available, continue
+            match bgm_check {
+                Ok(output) if output.status.success() => {
+                    // bgm audio is available, continue
+                    let streams = String::from_utf8_lossy(&output.stdout);
+                    if !streams.contains("audio") {
+                        anyhow::bail!("BGM file has no audio stream: {}", bgm_location);
+                    }
+                    println!("bgm found {}", bgm_location);
+                }
+                _ => {
+                    println!("bgm might be silent")
+                }
+            }
         }
-        _ => {
-            println!("bgm might be silent")
-        }
+    } else {
+        println!("no bgm available");
     }
 
     // Validate colors
@@ -345,17 +367,10 @@ fn main() -> Result<()> {
             fontsize = 80;
         }
 
-        let drawtext = if info.os_type() == Type::Windows {
-            format!(
-                "drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text={}:fontcolor={}:fontsize={}:x=(w-text_w)/5*2:y=h/2-ascent:enable='between(t,{},{})'",
-                escaped_word, args.text_color, fontsize, start_time, end_time
-            )
-        } else {
-            format!(
-                "drawtext=fontfile='{}':text='{}':fontcolor={}:fontsize={}:x=(w-text_w)/5*2:y=h/2-ascent:enable='between(t,{},{})'",
-                font_location, escaped_word, args.text_color, fontsize, start_time, end_time
-            )
-        };
+        let drawtext = format!(
+            "drawtext=fontfile='{}':text='{}':fontcolor={}:fontsize={}:x=(w-text_w)/5*2:y=h/2-ascent:enable='between(t,{},{})'",
+            font_location, escaped_word, args.text_color, fontsize, start_time, end_time
+        );
 
         current_time = end_time;
 
@@ -363,18 +378,10 @@ fn main() -> Result<()> {
     }
 
     // mark wpm
-    let drawtext = if info.os_type() == Type::Windows {
-        println!("Running on Windows, use msyh despite of argument");
-        format!(
-            "drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text='{} wpm':fontcolor={}:fontsize=60:x=(w-text_w)*0.9:y=(h-text_h)*0.9",
-            args.wpm, args.secondary_color
-        )
-    } else {
-        format!(
-            "drawtext=fontfile='{}':text='{} wpm':fontcolor={}:fontsize=60:x=(w-text_w)*0.9:y=(h-text_h)*0.9",
-            font_location, args.wpm, args.secondary_color
-        )
-    };
+    let drawtext = format!(
+        "drawtext=fontfile='{}':text='{} wpm':fontcolor={}:fontsize=60:x=(w-text_w)*0.9:y=(h-text_h)*0.9",
+        font_location, args.wpm, args.secondary_color
+    );
 
     filters.push(drawtext);
 
@@ -383,52 +390,69 @@ fn main() -> Result<()> {
 
     println!("Rendering video...");
 
-    let output = Command::new("ffmpeg")
-        .env("FONTCONFIG_FILE", "NUL")
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-hwaccel",
-            "auto", // Use hardware acceleration if available
-            "-f",
-            "lavfi",
-            "-i",
-            &format!(
-                "color=c={}:s=1920x1080:d={}:r=30",
-                args.bg_color, total_duration
-            ),
-            // add bgm for webm
-            // ffmpeg -i video.mp4 -stream_loop -1 -i bgm.webm -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 192k -shortest
-            "-stream_loop",
-            "-1",
-            "-i",
-            &args.bgm_location,
-            // "-filter:a",
-            // "\"loudnorm=I=-14:LRA=11:TP=-1.5:measured_I=-27.61:measured_LRA=18.06:measured_TP=-4.47:measured_thresh=-39.20:offset=0.58:linear=true\"",
-            // end of add bgm
-            "-vf",
-            &filter_chain,
-            "-map",
-            "0:v:0", // Map video from input 0
-            "-map",
-            "1:a:0", // Map audio from input 1
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast", // Much faster encoding (was using default "medium")
-            "-crf",
-            "23", // Quality level (lower = better, 23 is good)
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-            "-shortest",
-            "-pix_fmt",
-            "yuv420p",
-            "-y",
-            &args.output,
-        ])
+    let mut cmd = Command::new("ffmpeg");
+    cmd.env("FONTCONFIG_FILE", "NUL");
+    cmd.args([
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-hwaccel",
+        "auto",
+        "-f",
+        "lavfi",
+        "-i",
+        &format!(
+            "color=c={}:s=1920x1080:d={}:r=30",
+            args.bg_color, total_duration
+        ),
+    ]);
+
+    // Add BGM input if provided
+    if let Some(bgm_location) = &args.bgm_location {
+        cmd.args(["-stream_loop", "-1", "-i", bgm_location]);
+    }
+
+    // Add video filter
+    cmd.args(["-vf", &filter_chain]);
+
+    // Map streams based on whether BGM is present
+    if args.bgm_location.is_some() {
+        cmd.args([
+            "-map", "0:v:0", // Video from input 0
+            "-map", "1:a:0", // Audio from input 1 (BGM)
+        ]);
+    } else {
+        cmd.args([
+            "-map", "0:v:0", // Video from input 0 only
+        ]);
+    }
+
+    // Video codec settings
+    cmd.args([
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-crf",
+        "23",
+        "-pix_fmt",
+        "yuv420p",
+    ]);
+
+    // Audio codec settings (only if BGM is present)
+    if args.bgm_location.is_some() {
+        cmd.args(["-c:a", "aac", "-b:a", "192k", "-shortest"]);
+    }
+
+    // Output file
+    if let Some(is_overwrite) = &args.overwrite_output_file
+        && *is_overwrite
+    {
+        cmd.args(["-y"]);
+    }
+    cmd.args([&args.output]);
+
+    let output = cmd
         .output()
         .context("Failed to execute ffmpeg. Make sure ffmpeg is installed and in PATH.")?;
 
