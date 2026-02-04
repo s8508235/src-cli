@@ -109,6 +109,13 @@ fn process_segment(segment: &str) -> Vec<String> {
     }
 }
 
+// Strip trailing punctuation and quotes from a word for dictionary lookup
+#[allow(dead_code)]
+pub fn clean_word_for_lookup(word: &str) -> String {
+    word.trim_end_matches(&[',', '.', '?', '!', ';', ':', '"', '\'', ')', ']', '}'][..])
+        .trim_start_matches(&['(', '[', '{', '"', '\''][..])
+        .to_string()
+}
 #[cfg(test)]
 mod tests {
     use super::*;
