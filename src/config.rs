@@ -56,10 +56,10 @@ pub fn merge_config_with_args(args: &mut crate::Args) -> Result<()> {
 
     // Scalar fields - use a helper function
     fn merge_scalar<T: PartialEq>(target: &mut T, default: T, source: Option<T>) {
-        if *target == default {
-            if let Some(value) = source {
-                *target = value;
-            }
+        if *target == default
+            && let Some(value) = source
+        {
+            *target = value;
         }
     }
 
@@ -74,13 +74,17 @@ pub fn merge_config_with_args(args: &mut crate::Args) -> Result<()> {
 
     // Float with epsilon comparison
     const DEFAULT_REST_DURATION: f64 = 0.5;
-    if (args.rest_duration - DEFAULT_REST_DURATION).abs() < f64::EPSILON {
-        config.rest_duration.take().map(|d| args.rest_duration = d);
+    if (args.rest_duration - DEFAULT_REST_DURATION).abs() < f64::EPSILON
+        && let Some(d) = config.rest_duration.take()
+    {
+        args.rest_duration = d;
     }
 
     // Boolean
-    if args.focus_lines {
-        config.focus_lines.take().map(|f| args.focus_lines = f);
+    if args.focus_lines
+        && let Some(f) = config.focus_lines.take()
+    {
+        args.focus_lines = f;
     }
 
     // Option fields - use get_or_insert
