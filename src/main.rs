@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 
 mod config;
@@ -58,7 +58,8 @@ fn main() -> Result<()> {
 
     let mut args = Args::parse();
     // overwrite config if args not present
-    config::merge_config_with_args(&mut args);
+    config::merge_config_with_args(&mut args)
+        .with_context(|| "Failed to merge configuration with arguments")?;
 
     ffmpeg::generate_video(args)?;
 

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Ok, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -40,70 +40,53 @@ pub fn load_config() -> Result<Config> {
         return Ok(Config::default());
     }
 
-    let content = std::fs::read_to_string(&config_path).context("Failed to read config file")?;
+    let content = std::fs::read_to_string(&config_path)
+        .with_context(|| format!("Failed to read config from {}", config_path.display()))?;
 
-    let config: Config = toml::from_str(&content).context("Failed to parse config file")?;
+    let config: Config = toml::from_str(&content)
+        .with_context(|| format!("Failed to load config from {}", config_path.display()))?;
 
     Ok(config)
 }
 
-pub fn merge_config_with_args(args: &mut crate::Args) {
+pub fn merge_config_with_args(args: &mut crate::Args) -> Result<()> {
     // Load config and merge with CLI args (CLI args take precedence)
-    let config = load_config().unwrap();
+    let mut config = load_config().context("Failed to load user configuration")?;
     // Only override if arg is at default value and config has a value
 
-    // WPM: default is 300
-    if args.wpm == 300
-        && let Some(wpm) = config.wpm
-    {
-        args.wpm = wpm;
+    // Scalar fields - use a helper function
+    fn merge_scalar<T: PartialEq>(target: &mut T, default: T, source: Option<T>) {
+        if *target == default {
+            if let Some(value) = source {
+                *target = value;
+            }
+        }
     }
 
-    // Text color: default is "white"
-    if args.text_color == "white"
-        && let Some(color) = config.text_color
-    {
-        args.text_color = color.clone();
+    merge_scalar(&mut args.wpm, 300, config.wpm);
+    merge_scalar(&mut args.text_color, "white".to_string(), config.text_color);
+    merge_scalar(&mut args.bg_color, "black".to_string(), config.bg_color);
+    merge_scalar(
+        &mut args.secondary_color,
+        "#1a1911".to_string(),
+        config.secondary_color,
+    );
+
+    // Float with epsilon comparison
+    const DEFAULT_REST_DURATION: f64 = 0.5;
+    if (args.rest_duration - DEFAULT_REST_DURATION).abs() < f64::EPSILON {
+        config.rest_duration.take().map(|d| args.rest_duration = d);
     }
 
-    // Background color: default is "black"
-    if args.bg_color == "black"
-        && let Some(color) = config.bg_color
-    {
-        args.bg_color = color.clone();
+    // Boolean
+    if args.focus_lines {
+        config.focus_lines.take().map(|f| args.focus_lines = f);
     }
 
-    // Secondary color: check if it's at default
-    if args.secondary_color == "#1a1911"
-        && let Some(color) = config.secondary_color
-    {
-        args.secondary_color = color;
-    }
+    // Option fields - use get_or_insert
+    args.bgm_location = args.bgm_location.take().or(config.bgm_location);
+    args.font_location = args.font_location.take().or(config.font_location);
+    args.overwrite_output_file = args.overwrite_output_file.or(config.overwrite_output_file);
 
-    // Rest duration: default is 0.5
-    if (args.rest_duration - 0.5).abs() < f64::EPSILON
-        && let Some(duration) = config.rest_duration
-    {
-        args.rest_duration = duration;
-    }
-
-    // Focus lines: default is true
-    if args.focus_lines
-        && let Some(focus) = config.focus_lines
-    {
-        args.focus_lines = focus;
-    }
-
-    // BGM location: only use config if not provided via CLI
-    if args.bgm_location.is_none() {
-        args.bgm_location = config.bgm_location.clone();
-    }
-
-    if args.font_location.is_none() {
-        args.font_location = config.font_location.clone();
-    }
-
-    if args.overwrite_output_file.is_none() {
-        args.overwrite_output_file = config.overwrite_output_file;
-    }
+    Ok(())
 }
